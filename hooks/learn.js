@@ -111,7 +111,7 @@ function buildEnforcementNudge(signature, count) {
 function buildScopeWarning(root, scope) {
   if (!scope.suspicious || !scope.firstTime) return '';
   return 'Warning: a lesson was scoped to "' + root + '", which is outside known work folders (' +
-    lib.KNOWN_WORK_PARENTS.join(', ') + '). Run `node ~/.cursor/hooks/memory/cli.js whereami` to check.';
+    lib.getKnownWorkParents().join(', ') + '). Run `node ~/.cursor/hooks/memory/cli.js whereami` to check.';
 }
 
 async function main() {

@@ -5,18 +5,58 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
-const DIR = path.join(os.homedir(), '.cursor', 'memory');
+// test override; unset in production
+const DIR = process.env.SKAR_MEMORY_DIR
+  ? path.resolve(process.env.SKAR_MEMORY_DIR)
+  : path.join(os.homedir(), '.cursor', 'memory');
 const PROJECTS_DIR = path.join(DIR, 'projects');
 const SAMPLES = path.join(DIR, '_payload-samples.json');
 const SCOPE_WARNINGS = path.join(DIR, 'scope-warnings.json');
+const CONFIG_PATH = path.join(DIR, 'config.json');
 
 // Real work lives under these parents. Anything a lesson resolves to outside
 // of them (or straight to the home dir) is almost certainly a cwd-resolution
 // miss, not a real project - flag it instead of silently filing it away.
-const KNOWN_WORK_PARENTS = [
+// Overridable via ~/.cursor/memory/config.json ({ knownWorkParents: [...] }).
+const DEFAULT_KNOWN_WORK_PARENTS = [
   path.join(os.homedir(), 'Documents', 'GitHub'),
   path.join(os.homedir(), 'Projects'),
 ];
+
+function expandHome(p) {
+  if (typeof p !== 'string' || !p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+let _configCache = null;
+
+function clearConfigCache() {
+  _configCache = null;
+}
+
+function loadConfig() {
+  if (_configCache) return _configCache;
+  const raw = readJson(CONFIG_PATH, null);
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.knownWorkParents) || !raw.knownWorkParents.length) {
+    if (raw !== null) {
+      try { process.stderr.write('skar-memory: invalid config.json, using defaults\n'); } catch { /* ignore */ }
+    }
+    _configCache = { knownWorkParents: DEFAULT_KNOWN_WORK_PARENTS.slice() };
+    return _configCache;
+  }
+  _configCache = {
+    knownWorkParents: raw.knownWorkParents.map(expandHome).map((p) => path.resolve(p)),
+  };
+  return _configCache;
+}
+
+function getKnownWorkParents() {
+  return loadConfig().knownWorkParents;
+}
 
 // A signature must repeat this many times before it becomes an injected lesson.
 // No decay, no expiry: once learned, a lesson stays until explicitly forgotten.
@@ -63,7 +103,7 @@ function encodeCursorProjectDir(absPath) {
 function decodeCursorProjectDir(dirName) {
   const want = String(dirName || '').toLowerCase();
   // Match by encoding real folders under known parents (handles worktrees too).
-  for (const parent of KNOWN_WORK_PARENTS) {
+  for (const parent of getKnownWorkParents()) {
     if (!fs.existsSync(parent)) continue;
     const stack = [parent];
     let depth = 0;
@@ -92,13 +132,13 @@ function resolveFromWorkspaceLabel() {
   const label = (process.env.CURSOR_WORKSPACE_LABEL || '').trim();
   if (!label) return null;
 
-  for (const parent of KNOWN_WORK_PARENTS) {
+  for (const parent of getKnownWorkParents()) {
     const candidate = path.join(parent, label);
     if (fs.existsSync(candidate)) return path.resolve(candidate);
   }
 
   // Worktrees / nested clones: search a few levels for a dir named exactly label
-  for (const parent of KNOWN_WORK_PARENTS) {
+  for (const parent of getKnownWorkParents()) {
     const found = findNamedDir(parent, label, 4);
     if (found) return found;
   }
@@ -269,7 +309,7 @@ function normalizePath(p) {
 
 function isKnownWorkspaceRoot(root) {
   const norm = normalizePath(root);
-  return KNOWN_WORK_PARENTS.some((parent) => {
+  return getKnownWorkParents().some((parent) => {
     const p = normalizePath(parent);
     return norm === p || norm.startsWith(p + path.sep);
   });
@@ -395,6 +435,7 @@ function captureSample(event, payload) {
 
 module.exports = {
   DIR,
+  CONFIG_PATH,
   PROJECTS_DIR,
   PROMOTE_AT,
   MAX_LEARNED,
@@ -410,9 +451,19 @@ module.exports = {
   projectPaths,
   ensureProjectMeta,
   listProjects,
-  KNOWN_WORK_PARENTS,
+  expandHome,
+  loadConfig,
+  getKnownWorkParents,
+  clearConfigCache,
   SCOPE_WARNINGS,
   isSuspiciousRoot,
   flagSuspiciousRoot,
   isCursorConfigPath,
 };
+
+// Deprecated: snapshot-at-require-time is wrong once config reloads. Prefer
+// getKnownWorkParents(). Kept as a getter-backed alias for one release.
+Object.defineProperty(module.exports, 'KNOWN_WORK_PARENTS', {
+  enumerable: true,
+  get: getKnownWorkParents,
+});

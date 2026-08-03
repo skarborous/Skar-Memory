@@ -26,7 +26,7 @@ async function main() {
   // resolution Ã¢â‚¬â€ that means something is genuinely wrong.
   const scopeWarning = scope.suspicious
     ? 'Warning: memory this session is scoped to "' + root + '", outside known work folders (' +
-      lib.KNOWN_WORK_PARENTS.join(', ') + '). Lessons here may not reach your real project. Run ' +
+      lib.getKnownWorkParents().join(', ') + '). Lessons here may not reach your real project. Run ' +
       '`node ~/.cursor/hooks/memory/cli.js whereami` to check.'
     : '';
 

@@ -49,7 +49,7 @@ switch (action) {
     console.log('slug:   ' + path.basename(paths.dir));
     console.log('store:  ' + paths.dir);
     if (lib.isSuspiciousRoot(root)) {
-      console.log('WARNING: outside known work folders (' + lib.KNOWN_WORK_PARENTS.join(', ') + ') - likely a scoping miss.');
+      console.log('WARNING: outside known work folders (' + lib.getKnownWorkParents().join(', ') + ') - likely a scoping miss.');
     }
     break;
   }
