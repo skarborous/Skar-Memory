@@ -179,6 +179,8 @@ function findNamedDir(root, name, maxDepth) {
 
 // Walks up from `start` looking for a project anchor (.git, then project-level
 // .cursor). Never treats ~/.cursor itself or the home dir as an anchor.
+// Linked git worktrees and paths under .worktrees/ collapse to the main repo
+// so subagents/worktrees always write lessons to the primary project store.
 function findProjectRoot(start) {
   const home = os.homedir();
   let dir = path.resolve(start || process.cwd());
@@ -186,7 +188,7 @@ function findProjectRoot(start) {
   for (let i = 0; i < 25; i++) {
     if (dir === home || isCursorConfigPath(dir)) break;
     if (fs.existsSync(path.join(dir, '.git')) || fs.existsSync(path.join(dir, '.cursor'))) {
-      return dir;
+      return canonicalizeProjectRoot(dir);
     }
     const parent = path.dirname(dir);
     if (parent === dir) break;
@@ -195,8 +197,87 @@ function findProjectRoot(start) {
   const resolved = path.resolve(start || process.cwd());
   if (isCursorConfigPath(resolved) || normalizePath(resolved) === normalizePath(home)) return null;
   // Only accept unmarked dirs that both sit under a known parent AND exist.
-  if (isKnownWorkspaceRoot(resolved) && fs.existsSync(resolved)) return resolved;
+  if (isKnownWorkspaceRoot(resolved) && fs.existsSync(resolved)) {
+    return canonicalizeProjectRoot(resolved);
+  }
   return null;
+}
+
+function readGitDirPointer(projectDir) {
+  const gitPath = path.join(projectDir, '.git');
+  try {
+    const st = fs.lstatSync(gitPath);
+    if (st.isDirectory()) return { type: 'dir', gitDir: gitPath };
+    if (st.isFile()) {
+      const text = fs.readFileSync(gitPath, 'utf8');
+      const m = text.match(/^gitdir:\s*(.+?)\s*$/m);
+      if (!m) return null;
+      return { type: 'file', gitDir: path.resolve(projectDir, m[1].trim()) };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+// Linked worktree gitdir looks like <main>/.git/worktrees/<name>
+function mainRootFromLinkedGitDir(gitDir) {
+  const parts = path.resolve(gitDir).split(/[/\\]/);
+  const wtIdx = parts.lastIndexOf('worktrees');
+  if (wtIdx > 0 && parts[wtIdx - 1] === '.git') {
+    const commonGit = parts.slice(0, wtIdx).join(path.sep);
+    const main = path.dirname(commonGit);
+    if (main && fs.existsSync(main)) return main;
+  }
+  return null;
+}
+
+// Documents/GitHub/Foo/.worktrees/bar → Foo (same for worktrees/)
+function collapseNestedWorktreeFolder(dir) {
+  const resolved = path.resolve(dir);
+  const parts = resolved.split(/[/\\]/);
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] !== '.worktrees' && parts[i] !== 'worktrees') continue;
+    if (i === 0 || i + 1 >= parts.length) continue;
+    const candidate = parts.slice(0, i).join(path.sep);
+    if (!candidate) continue;
+    if (fs.existsSync(path.join(candidate, '.git')) || fs.existsSync(path.join(candidate, '.cursor'))) {
+      return candidate;
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Map worktrees / nested agent checkouts to the primary repo root so lessons
+ * always land in <main>/.cursor/memory/.
+ */
+function canonicalizeProjectRoot(dir) {
+  if (!dir || isUnscopedStoreRoot(dir)) return dir;
+  let root = collapseNestedWorktreeFolder(dir);
+  const git = readGitDirPointer(root);
+  if (git && git.type === 'file') {
+    const main = mainRootFromLinkedGitDir(git.gitDir);
+    if (main) return path.resolve(main);
+  }
+  // If we landed inside a nested folder that has its own .git file, try again
+  // from the nearest ancestor with a .git pointer.
+  if (!git) {
+    let walk = path.resolve(root);
+    for (let i = 0; i < 15; i++) {
+      const ptr = readGitDirPointer(walk);
+      if (ptr && ptr.type === 'file') {
+        const main = mainRootFromLinkedGitDir(ptr.gitDir);
+        if (main) return path.resolve(main);
+        break;
+      }
+      if (ptr && ptr.type === 'dir') return path.resolve(walk);
+      const parent = path.dirname(walk);
+      if (parent === walk) break;
+      walk = parent;
+    }
+  }
+  return path.resolve(root);
 }
 
 function normalizeWorkspaceRoot(p) {
@@ -215,7 +296,7 @@ function resolveProjectRoot(payload) {
   const roots = payload.workspace_roots || payload.workspaceRoots || [];
   if (Array.isArray(roots) && roots.length) {
     const n = normalizeWorkspaceRoot(roots[0]);
-    if (n && fs.existsSync(n)) return findProjectRoot(n) || n;
+    if (n && fs.existsSync(n)) return canonicalizeProjectRoot(findProjectRoot(n) || n);
   }
 
   // 2) transcript_path → decode project folder
@@ -224,7 +305,7 @@ function resolveProjectRoot(payload) {
     const m = transcript.replace(/\\/g, '/').match(/\.cursor\/projects\/([^/]+)\//i);
     if (m) {
       const decoded = decodeCursorProjectDir(m[1]);
-      if (decoded) return decoded;
+      if (decoded) return canonicalizeProjectRoot(decoded);
     }
   }
 
@@ -250,18 +331,20 @@ function resolveProjectRoot(payload) {
     const fromConversation = resolveFromConversationId();
     if (prev == null) delete process.env.CURSOR_CONVERSATION_ID;
     else process.env.CURSOR_CONVERSATION_ID = prev;
-    if (fromConversation) return findProjectRoot(fromConversation) || fromConversation;
+    if (fromConversation) {
+      return canonicalizeProjectRoot(findProjectRoot(fromConversation) || fromConversation);
+    }
   }
 
   // 6) workspace label (can be stale — last resort before unscoped)
   const fromLabel = resolveFromWorkspaceLabel();
-  if (fromLabel) return findProjectRoot(fromLabel) || fromLabel;
+  if (fromLabel) return canonicalizeProjectRoot(findProjectRoot(fromLabel) || fromLabel);
 
   const fallback = path.resolve(process.cwd());
   if (isCursorConfigPath(fallback) || !fs.existsSync(fallback)) {
     return path.join(DIR, '_unscoped');
   }
-  return fallback;
+  return canonicalizeProjectRoot(fallback);
 }
 
 function appendAudit(entry) {
@@ -281,8 +364,12 @@ function isUnscopedStoreRoot(root) {
 
 // Per-project lessons live in <project>/.cursor/memory/.
 // Unscoped / unknown roots still use ~/.cursor/memory/_unscoped.
+// Always canonicalize so worktrees/subagents share the main repo store.
 function projectPaths(root) {
-  const resolved = path.resolve(root || path.join(DIR, '_unscoped'));
+  let resolved = path.resolve(root || path.join(DIR, '_unscoped'));
+  if (!isUnscopedStoreRoot(resolved)) {
+    resolved = canonicalizeProjectRoot(resolved);
+  }
   const dir = isUnscopedStoreRoot(resolved)
     ? path.join(DIR, '_unscoped')
     : path.join(resolved, '.cursor', 'memory');
@@ -490,6 +577,7 @@ module.exports = {
   AUDIT_LOG,
   resolveProjectRoot,
   projectPaths,
+  canonicalizeProjectRoot,
   ensureProjectMeta,
   listProjects,
   expandHome,

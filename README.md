@@ -42,6 +42,8 @@ Uninstall:
 | Unscoped / unknown | `~/.cursor/memory/_unscoped/` |
 | Config (`knownWorkParents`) | `~/.cursor/memory/config.json` |
 
+Git worktrees and nested `.worktrees/` / `worktrees/` checkouts canonicalize to the **main repo** root, so subagents always write lessons to the primary project store.
+
 Install **never** deletes project lesson files.
 
 Tip: add `.cursor/memory/` to a project's `.gitignore` if you do not want lessons committed.
