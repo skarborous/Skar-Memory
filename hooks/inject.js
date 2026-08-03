@@ -52,15 +52,26 @@ async function main() {
     budget -= line.length + 1;
   }
 
-  if (!lines.length) return scopeWarning ? emit({ additional_context: scopeWarning }) : emit({});
+  if (!lines.length) {
+    const mcpOnly = [
+      scopeWarning,
+      '## Durable memory (MCP `memory`) - USE AUTOMATICALLY',
+      'At session start and when recalling user prefs/decisions: call MCP tools on server `user-memory` / `memory` — `search_nodes` or `read_graph` first; write with `create_entities` / `add_observations` / `create_relations`.',
+      'Do NOT store command/shell lessons there (hooks handle those). Do NOT ask the user whether to use memory — just use it.',
+    ].filter(Boolean).join('\n');
+    return emit({ additional_context: mcpOnly });
+  }
 
   return emit({
     additional_context: [
       scopeWarning,
       '## Learned constraints (auto-captured from repeated failures) - BINDING',
-      'These came from real errors in this environment. They are NOT suggestions. Every one was promoted because the agent failed the same way at least twice after the lesson was already known. Re-failing the same way will keep incrementing the counter and trigger a louder nudge each time.',
+      'These came from real errors in this environment. They are NOT suggestions. Every one was promoted because the agent failed the same way at least twice. Do not re-fail the same way.',
       'Forget a wrong lesson: `node ~/.cursor/hooks/memory/cli.js forget <key>`.',
       ...lines,
+      '',
+      '## Durable memory (MCP `memory`) - USE AUTOMATICALLY',
+      'For user prefs / decisions / people-org facts: MCP `search_nodes` or `read_graph` (server memory). Write with `create_entities` / `add_observations`. No asking — just use. Hook lessons above stay in `.cursor/memory/` only.',
     ].filter(Boolean).join('\n'),
   });
 }

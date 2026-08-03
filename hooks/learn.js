@@ -79,10 +79,31 @@ function looksFailed(exitCode, text, toolName, payload) {
 
 function isNoiseLesson(signature, exitCode, text) {
   if (!signature) return true;
+  const key = signature.key || '';
+  const hay = String(text || '');
+
+  // Never promote stdout/stderr dumps that are clearly not actionable shell mistakes
+  if (/npm notice run |Lines Words Characters Property|stargazersCount|Co-authored-by: Cursor|Missing file specification after redirect/i.test(hay)) {
+    return true;
+  }
+  // Accidental secrets / env dumps
+  if (/api[_-]?key|password|secret|bearer |Authorization:|sk-[a-zA-Z0-9]{10,}|OPENAI_API_KEY|SONARQUBE_TOKEN/i.test(hay)) {
+    return true;
+  }
+  // Route trees / UI dumps mistaken for failures
+  if (/\/api\/users|\/dashboard\/|├|└|│/.test(hay) && /generic:/i.test(key)) {
+    return true;
+  }
+
   // Generic fingerprints of successful command output (file contents, empty JSON, etc.)
-  if (signature.key.indexOf('generic:') === 0) {
+  if (key.indexOf('generic:') === 0) {
     if (exitCode === 0) return true;
-    if (!/CommandNotFoundException|is not recognized|FullyQualifiedErrorId|Exception|\bERROR\b|\bBLOCKED\b|Cannot find path|Unable to find/i.test(text || '')) {
+    // Heredoc / PowerShell redirect noise is environment syntax — only keep if a known detector hit
+    if (/Missing file specification after redirection|Variable reference is not valid/i.test(hay)) {
+      // Keep only if we also have a real detector key elsewhere; generic alone is junk
+      return true;
+    }
+    if (!/CommandNotFoundException|is not recognized|FullyQualifiedErrorId|Exception|\bERROR\b|\bBLOCKED\b|Cannot find path|Unable to find/i.test(hay)) {
       return true;
     }
   }
