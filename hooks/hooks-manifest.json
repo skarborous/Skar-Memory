@@ -1,0 +1,11 @@
+{
+  "entries": [
+    { "event": "afterShellExecution", "script": "learn.js", "args": ["shell"], "timeout": 10 },
+    { "event": "beforeSubmitPrompt", "script": "heal-hooks.js", "args": [], "timeout": 5 },
+    { "event": "postToolUseFailure", "script": "learn.js", "args": ["tool"], "timeout": 10 },
+    { "event": "preCompact", "script": "inject.js", "args": [] },
+    { "event": "preToolUse", "script": "enforce.js", "args": [], "matcher": "Shell", "timeout": 5 },
+    { "event": "sessionStart", "script": "inject.js", "args": [] },
+    { "event": "postToolUse", "script": "learn.js", "args": ["tool"], "matcher": "Shell|CallMcpTool", "timeout": 10 }
+  ]
+}

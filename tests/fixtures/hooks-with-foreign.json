@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "node C:/other/caveman-session-start.js" }
+    ],
+    "preToolUse": [
+      { "command": "C:/other/lean-ctx.exe hook rewrite", "matcher": "Shell" }
+    ]
+  }
+}

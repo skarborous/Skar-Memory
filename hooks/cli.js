@@ -8,7 +8,6 @@
 //   node cli.js projects         list every project with stored memory
 'use strict';
 
-const path = require('path');
 const lib = require('./lib');
 
 const args = process.argv.slice(2);
@@ -46,10 +45,9 @@ switch (action) {
     const paths = lib.projectPaths(root);
     console.log('cwd:    ' + process.cwd());
     console.log('root:   ' + root);
-    console.log('slug:   ' + path.basename(paths.dir));
     console.log('store:  ' + paths.dir);
     if (lib.isSuspiciousRoot(root)) {
-      console.log('WARNING: outside known work folders (' + lib.KNOWN_WORK_PARENTS.join(', ') + ') - likely a scoping miss.');
+      console.log('WARNING: outside known work folders (' + lib.getKnownWorkParents().join(', ') + ') - likely a scoping miss.');
     }
     break;
   }

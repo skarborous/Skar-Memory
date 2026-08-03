@@ -3,20 +3,58 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
 
-const DIR = path.join(os.homedir(), '.cursor', 'memory');
-const PROJECTS_DIR = path.join(DIR, 'projects');
+// test override; unset in production
+const DIR = process.env.SKAR_MEMORY_DIR
+  ? path.resolve(process.env.SKAR_MEMORY_DIR)
+  : path.join(os.homedir(), '.cursor', 'memory');
 const SAMPLES = path.join(DIR, '_payload-samples.json');
 const SCOPE_WARNINGS = path.join(DIR, 'scope-warnings.json');
+const CONFIG_PATH = path.join(DIR, 'config.json');
 
 // Real work lives under these parents. Anything a lesson resolves to outside
 // of them (or straight to the home dir) is almost certainly a cwd-resolution
 // miss, not a real project - flag it instead of silently filing it away.
-const KNOWN_WORK_PARENTS = [
+// Overridable via ~/.cursor/memory/config.json ({ knownWorkParents: [...] }).
+const DEFAULT_KNOWN_WORK_PARENTS = [
   path.join(os.homedir(), 'Documents', 'GitHub'),
   path.join(os.homedir(), 'Projects'),
 ];
+
+function expandHome(p) {
+  if (typeof p !== 'string' || !p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+let _configCache = null;
+
+function clearConfigCache() {
+  _configCache = null;
+}
+
+function loadConfig() {
+  if (_configCache) return _configCache;
+  const raw = readJson(CONFIG_PATH, null);
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.knownWorkParents) || !raw.knownWorkParents.length) {
+    if (raw !== null) {
+      try { process.stderr.write('skar-memory: invalid config.json, using defaults\n'); } catch { /* ignore */ }
+    }
+    _configCache = { knownWorkParents: DEFAULT_KNOWN_WORK_PARENTS.slice() };
+    return _configCache;
+  }
+  _configCache = {
+    knownWorkParents: raw.knownWorkParents.map(expandHome).map((p) => path.resolve(p)),
+  };
+  return _configCache;
+}
+
+function getKnownWorkParents() {
+  return loadConfig().knownWorkParents;
+}
 
 // A signature must repeat this many times before it becomes an injected lesson.
 // No decay, no expiry: once learned, a lesson stays until explicitly forgotten.
@@ -63,7 +101,7 @@ function encodeCursorProjectDir(absPath) {
 function decodeCursorProjectDir(dirName) {
   const want = String(dirName || '').toLowerCase();
   // Match by encoding real folders under known parents (handles worktrees too).
-  for (const parent of KNOWN_WORK_PARENTS) {
+  for (const parent of getKnownWorkParents()) {
     if (!fs.existsSync(parent)) continue;
     const stack = [parent];
     let depth = 0;
@@ -92,13 +130,13 @@ function resolveFromWorkspaceLabel() {
   const label = (process.env.CURSOR_WORKSPACE_LABEL || '').trim();
   if (!label) return null;
 
-  for (const parent of KNOWN_WORK_PARENTS) {
+  for (const parent of getKnownWorkParents()) {
     const candidate = path.join(parent, label);
     if (fs.existsSync(candidate)) return path.resolve(candidate);
   }
 
   // Worktrees / nested clones: search a few levels for a dir named exactly label
-  for (const parent of KNOWN_WORK_PARENTS) {
+  for (const parent of getKnownWorkParents()) {
     const found = findNamedDir(parent, label, 4);
     if (found) return found;
   }
@@ -235,17 +273,22 @@ function appendAudit(entry) {
   }
 }
 
-function projectSlug(root) {
-  const base = path.basename(root).toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 40) || 'root';
-  const hash = crypto.createHash('md5').update(root.toLowerCase()).digest('hex').slice(0, 8);
-  return base + '-' + hash;
+function isUnscopedStoreRoot(root) {
+  const norm = normalizePath(root);
+  const unscoped = normalizePath(path.join(DIR, '_unscoped'));
+  return norm === unscoped || norm.endsWith(path.sep + '_unscoped') || path.basename(root) === '_unscoped';
 }
 
+// Per-project lessons live in <project>/.cursor/memory/.
+// Unscoped / unknown roots still use ~/.cursor/memory/_unscoped.
 function projectPaths(root) {
-  const dir = path.join(PROJECTS_DIR, projectSlug(root));
+  const resolved = path.resolve(root || path.join(DIR, '_unscoped'));
+  const dir = isUnscopedStoreRoot(resolved)
+    ? path.join(DIR, '_unscoped')
+    : path.join(resolved, '.cursor', 'memory');
   return {
     dir,
-    root,
+    root: resolved,
     observations: path.join(dir, 'observations.json'),
     learned: path.join(dir, 'learned.json'),
     meta: path.join(dir, 'project.json'),
@@ -269,7 +312,7 @@ function normalizePath(p) {
 
 function isKnownWorkspaceRoot(root) {
   const norm = normalizePath(root);
-  return KNOWN_WORK_PARENTS.some((parent) => {
+  return getKnownWorkParents().some((parent) => {
     const p = normalizePath(parent);
     return norm === p || norm.startsWith(p + path.sep);
   });
@@ -303,17 +346,56 @@ function flagSuspiciousRoot(root, cwd, event) {
   return { suspicious: true, firstTime: !prior };
 }
 
-function listProjects() {
-  try {
-    return fs.readdirSync(PROJECTS_DIR)
-      .map((slug) => {
-        const dir = path.join(PROJECTS_DIR, slug);
-        const meta = readJson(path.join(dir, 'project.json'), {});
-        return { slug, dir, root: meta.root || '(unknown)' };
-      });
-  } catch {
-    return [];
+function findProjectMemoryDirs(parent, maxDepth, out) {
+  if (!parent || maxDepth < 0 || !fs.existsSync(parent)) return;
+  let entries;
+  try { entries = fs.readdirSync(parent, { withFileTypes: true }); } catch { return; }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (ent.name === 'node_modules' || ent.name === '.git') continue;
+    const full = path.join(parent, ent.name);
+    if (ent.name === '.cursor') {
+      const mem = path.join(full, 'memory');
+      if (fs.existsSync(path.join(mem, 'learned.json'))
+        || fs.existsSync(path.join(mem, 'observations.json'))
+        || fs.existsSync(path.join(mem, 'project.json'))) {
+        out.push(mem);
+      }
+      continue;
+    }
+    if (maxDepth > 0) findProjectMemoryDirs(full, maxDepth - 1, out);
   }
+}
+
+function listProjects() {
+  const seen = new Set();
+  const results = [];
+
+  function add(dir, rootHint) {
+    const key = normalizePath(dir);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const meta = readJson(path.join(dir, 'project.json'), {});
+    const root = meta.root || rootHint || path.dirname(path.dirname(dir));
+    results.push({
+      slug: path.basename(root),
+      dir,
+      root,
+    });
+  }
+
+  // Project-local stores under known work parents
+  for (const parent of getKnownWorkParents()) {
+    const found = [];
+    findProjectMemoryDirs(parent, 5, found);
+    found.forEach((mem) => add(mem, path.dirname(path.dirname(mem))));
+  }
+
+  // Global unscoped
+  const unscoped = path.join(DIR, '_unscoped');
+  if (fs.existsSync(unscoped)) add(unscoped, unscoped);
+
+  return results;
 }
 
 function readJson(file, fallback) {
@@ -326,7 +408,7 @@ function readJson(file, fallback) {
 
 function writeJson(file, value) {
   try {
-    fs.mkdirSync(DIR, { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, file);
@@ -395,7 +477,7 @@ function captureSample(event, payload) {
 
 module.exports = {
   DIR,
-  PROJECTS_DIR,
+  CONFIG_PATH,
   PROMOTE_AT,
   MAX_LEARNED,
   MAX_OBSERVATIONS,
@@ -410,9 +492,19 @@ module.exports = {
   projectPaths,
   ensureProjectMeta,
   listProjects,
-  KNOWN_WORK_PARENTS,
+  expandHome,
+  loadConfig,
+  getKnownWorkParents,
+  clearConfigCache,
   SCOPE_WARNINGS,
   isSuspiciousRoot,
   flagSuspiciousRoot,
   isCursorConfigPath,
 };
+
+// Deprecated: snapshot-at-require-time is wrong once config reloads. Prefer
+// getKnownWorkParents(). Kept as a getter-backed alias for one release.
+Object.defineProperty(module.exports, 'KNOWN_WORK_PARENTS', {
+  enumerable: true,
+  get: getKnownWorkParents,
+});
