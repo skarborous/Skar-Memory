@@ -21,11 +21,11 @@ Package the existing Cursor agent memory hooks (learn from repeated shell/tool f
 
 **Runtime link (after install):** `~/.cursor/hooks/memory` → junction (Windows) or symlink (Unix) → `<repo>/hooks`.
 
-**Data (never committed):** `~/.cursor/memory/`
+**Data (never wipe on install):**
 
-- `config.json` — `knownWorkParents` and related settings
-- `projects/<slug>/{learned,observations,project}.json`
-- audit / debug samples as today
+- Per project: `<project>/.cursor/memory/{learned,observations,project}.json`
+- Global: `~/.cursor/memory/config.json` (`knownWorkParents`), audit/samples, `_unscoped/`
+- Legacy (read-only discovery): `~/.cursor/memory/projects/<slug>/`
 
 **Cursor wiring:** install merges only Skar-Memory hook entries into `~/.cursor/hooks.json`. Other hooks (lean-ctx, caveman, etc.) are left untouched.
 

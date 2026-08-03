@@ -281,11 +281,22 @@ function projectSlug(root) {
   return base + '-' + hash;
 }
 
+function isUnscopedStoreRoot(root) {
+  const norm = normalizePath(root);
+  const unscoped = normalizePath(path.join(DIR, '_unscoped'));
+  return norm === unscoped || norm.endsWith(path.sep + '_unscoped') || path.basename(root) === '_unscoped';
+}
+
+// Per-project lessons live in <project>/.cursor/memory/.
+// Unscoped / unknown roots still use ~/.cursor/memory/_unscoped.
 function projectPaths(root) {
-  const dir = path.join(PROJECTS_DIR, projectSlug(root));
+  const resolved = path.resolve(root || path.join(DIR, '_unscoped'));
+  const dir = isUnscopedStoreRoot(resolved)
+    ? path.join(DIR, '_unscoped')
+    : path.join(resolved, '.cursor', 'memory');
   return {
     dir,
-    root,
+    root: resolved,
     observations: path.join(dir, 'observations.json'),
     learned: path.join(dir, 'learned.json'),
     meta: path.join(dir, 'project.json'),
@@ -343,17 +354,65 @@ function flagSuspiciousRoot(root, cwd, event) {
   return { suspicious: true, firstTime: !prior };
 }
 
-function listProjects() {
-  try {
-    return fs.readdirSync(PROJECTS_DIR)
-      .map((slug) => {
-        const dir = path.join(PROJECTS_DIR, slug);
-        const meta = readJson(path.join(dir, 'project.json'), {});
-        return { slug, dir, root: meta.root || '(unknown)' };
-      });
-  } catch {
-    return [];
+function findProjectMemoryDirs(parent, maxDepth, out) {
+  if (!parent || maxDepth < 0 || !fs.existsSync(parent)) return;
+  let entries;
+  try { entries = fs.readdirSync(parent, { withFileTypes: true }); } catch { return; }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (ent.name === 'node_modules' || ent.name === '.git') continue;
+    const full = path.join(parent, ent.name);
+    if (ent.name === '.cursor') {
+      const mem = path.join(full, 'memory');
+      if (fs.existsSync(path.join(mem, 'learned.json'))
+        || fs.existsSync(path.join(mem, 'observations.json'))
+        || fs.existsSync(path.join(mem, 'project.json'))) {
+        out.push(mem);
+      }
+      continue;
+    }
+    if (maxDepth > 0) findProjectMemoryDirs(full, maxDepth - 1, out);
   }
+}
+
+function listProjects() {
+  const seen = new Set();
+  const results = [];
+
+  function add(dir, rootHint) {
+    const key = normalizePath(dir);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const meta = readJson(path.join(dir, 'project.json'), {});
+    const root = meta.root || rootHint || path.dirname(path.dirname(dir));
+    results.push({
+      slug: path.basename(root),
+      dir,
+      root,
+    });
+  }
+
+  // Project-local stores under known work parents
+  for (const parent of getKnownWorkParents()) {
+    const found = [];
+    findProjectMemoryDirs(parent, 5, found);
+    found.forEach((mem) => add(mem, path.dirname(path.dirname(mem))));
+  }
+
+  // Global unscoped
+  const unscoped = path.join(DIR, '_unscoped');
+  if (fs.existsSync(unscoped)) add(unscoped, unscoped);
+
+  // Legacy global project stores (read-only discovery; new writes use project-local)
+  try {
+    fs.readdirSync(PROJECTS_DIR).forEach((slug) => {
+      const dir = path.join(PROJECTS_DIR, slug);
+      const meta = readJson(path.join(dir, 'project.json'), {});
+      add(dir, meta.root || '(unknown)');
+    });
+  } catch { /* ignore */ }
+
+  return results;
 }
 
 function readJson(file, fallback) {
@@ -366,7 +425,7 @@ function readJson(file, fallback) {
 
 function writeJson(file, value) {
   try {
-    fs.mkdirSync(DIR, { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(tmp, file);

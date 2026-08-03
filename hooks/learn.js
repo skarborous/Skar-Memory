@@ -11,6 +11,7 @@
 
 const lib = require('./lib');
 const { detect } = require('./detectors');
+const { promoteLesson } = require('./promote');
 
 const EVENT = process.argv[2] === 'tool' ? 'tool' : 'shell';
 
@@ -172,37 +173,35 @@ async function main() {
 
   const now = Date.now();
   const observations = lib.readJson(paths.observations, {});
-  const entry = observations[signature.key] || { count: 0, firstSeen: now };
-  entry.count += 1;
-  entry.lastSeen = now;
-  entry.lesson = signature.lesson;
-  entry.event = EVENT;
-  observations[signature.key] = entry;
+  const learned = lib.readJson(paths.learned, {});
+  const result = promoteLesson(
+    observations,
+    learned,
+    signature.key,
+    { lesson: signature.lesson, event: EVENT, now },
+    {
+      promoteAt: lib.PROMOTE_AT,
+      maxLearned: lib.MAX_LEARNED,
+      pruneByRecency: lib.pruneByRecency,
+    }
+  );
   lib.writeJson(paths.observations, lib.pruneByRecency(observations, lib.MAX_OBSERVATIONS));
 
   lib.appendAudit({
     event: EVENT, action: 'recorded', cwd: process.cwd(), root,
     label: process.env.CURSOR_WORKSPACE_LABEL || null,
     conversationId: process.env.CURSOR_CONVERSATION_ID || null,
-    key: signature.key, count: entry.count, command: String(command).slice(0, 80),
+    key: signature.key, count: result.entry.count, command: String(command).slice(0, 80),
     exitCode, toolName, suspicious: scope.suspicious,
   });
 
-  if (entry.count < lib.PROMOTE_AT) return finish(null);
+  if (!result.promoted) return finish(null);
 
-  const learned = lib.readJson(paths.learned, {});
-  const wasKnown = Boolean(learned[signature.key]);
-  learned[signature.key] = {
-    lesson: signature.lesson,
-    count: entry.count,
-    lastSeen: now,
-    promotedAt: wasKnown ? learned[signature.key].promotedAt : now,
-  };
-  lib.writeJson(paths.learned, lib.pruneByRecency(learned, lib.MAX_LEARNED));
+  lib.writeJson(paths.learned, learned);
 
-  lib.appendAudit({ event: EVENT, action: wasKnown ? 'nudge' : 'promoted', key: signature.key, root });
+  lib.appendAudit({ event: EVENT, action: result.wasKnown ? 'nudge' : 'promoted', key: signature.key, root });
 
-  return finish(wasKnown ? buildEnforcementNudge(signature, entry.count) : null);
+  return finish(result.wasKnown ? buildEnforcementNudge(signature, result.entry.count) : null);
 }
 
 main().catch((err) => {
