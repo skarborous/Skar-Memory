@@ -10,7 +10,7 @@
 'use strict';
 
 const lib = require('./lib');
-const { detect } = require('./detectors');
+const { detect, isJunkFailureText, isPromotableSignature } = require('./detectors');
 const { promoteLesson } = require('./promote');
 
 const EVENT = process.argv[2] === 'tool' ? 'tool' : 'shell';
@@ -67,57 +67,31 @@ function extract(payload) {
 }
 
 function looksFailed(exitCode, text, toolName, payload) {
+  const hay = String(text || '');
+  // Never treat our own enforce/inject text as a fresh failure to learn from.
+  if (/BLOCKED by learned constraint/i.test(hay)) return false;
+  if (
+    isJunkFailureText(hay)
+    && !/CommandNotFoundException|is not recognized as the name|token '&&'|command not found|lean-ctx replace mode|ctx_shell detected a|Missing file specification after redirection/i.test(hay)
+  ) {
+    return false;
+  }
+
   const hookEvent = payload && (payload.hook_event_name || payload.hookEventName || '');
-  // postToolUseFailure is authoritative ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Cursor already classified it as a failure.
+  // postToolUseFailure is authoritative — still requires a named detector later.
   if (hookEvent === 'postToolUseFailure') return true;
   if (payload && (payload.failure_type || payload.error_message || payload.errorMessage)) return true;
   if (typeof exitCode === 'number') return exitCode !== 0;
-  // postToolUse / afterShellExecution successes: only learn if the body clearly
-  // looks like an error. Never treat ordinary stdout (file contents, listings) as failure.
-  return /CommandNotFoundException|is not recognized as the name|FullyQualifiedErrorId|\bBLOCKED\b|\[exit:\s*[1-9]|token '&&' is not a valid|lean-ctx replace mode is active|ctx_shell detected a/i.test(text || '');
+  return /CommandNotFoundException|is not recognized as the name|FullyQualifiedErrorId|token '&&' is not a valid|lean-ctx replace mode is active|ctx_shell detected a|command not found|Missing file specification after redirection/i.test(hay);
 }
 
 function isNoiseLesson(signature, exitCode, text) {
   if (!signature) return true;
-  const key = signature.key || '';
-  const hay = String(text || '');
-
-  // Never promote stdout/stderr dumps that are clearly not actionable shell mistakes
-  if (/npm notice run |Lines Words Characters Property|stargazersCount|Co-authored-by: Cursor|Missing file specification after redirect/i.test(hay)) {
-    return true;
-  }
-  // Accidental secrets / env dumps
-  if (/api[_-]?key|password|secret|bearer |Authorization:|sk-[a-zA-Z0-9]{10,}|OPENAI_API_KEY|SONARQUBE_TOKEN/i.test(hay)) {
-    return true;
-  }
-  // Route trees / UI dumps mistaken for failures
-  if (/\/api\/users|\/dashboard\/|├|└|│/.test(hay) && /generic:/i.test(key)) {
-    return true;
-  }
-
-  // Generic fingerprints of successful command output (file contents, empty JSON, etc.)
-  if (key.indexOf('generic:') === 0) {
-    if (exitCode === 0) return true;
-    // Heredoc / PowerShell redirect noise is environment syntax — only keep if a known detector hit
-    if (/Missing file specification after redirection|Variable reference is not valid/i.test(hay)) {
-      // Keep only if we also have a real detector key elsewhere; generic alone is junk
-      return true;
-    }
-    if (!/CommandNotFoundException|is not recognized|FullyQualifiedErrorId|Exception|\bERROR\b|\bBLOCKED\b|Cannot find path|Unable to find/i.test(hay)) {
-      return true;
-    }
-  }
+  if (!isPromotableSignature(signature)) return true;
+  if (isJunkFailureText(text)) return true;
+  const key = String(signature.key || '');
+  if (key.indexOf('generic:') === 0 || key.indexOf('generic-exit:') === 0) return true;
   return false;
-}
-
-function fallbackSignature(command, exitCode) {
-  const head = String(command || '').trim().split(/[\s;|]/)[0].toLowerCase().slice(0, 40) || 'unknown';
-  return {
-    key: 'generic-exit:' + head + ':' + (exitCode == null ? 'err' : exitCode),
-    lesson: head + (exitCode == null
-      ? ' keeps failing in this environment; treat it as a broken command.'
-      : ' exits with code ' + exitCode + ' in this environment; treat it as a failing command.'),
-  };
 }
 
 function buildEnforcementNudge(signature, count) {
@@ -168,9 +142,7 @@ async function main() {
     return emit({});
   }
 
-  const signature = detect(command, text) || (typeof exitCode === 'number' || text
-    ? fallbackSignature(command, exitCode)
-    : null);
+  const signature = detect(command, text);
 
   if (!signature || isNoiseLesson(signature, exitCode, text)) {
     lib.appendAudit({

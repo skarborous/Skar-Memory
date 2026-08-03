@@ -25,8 +25,11 @@ function normalize(text) {
   return String(text || '').replace(/\s+/g, ' ').trim();
 }
 
-// Each detector turns raw failure output into a stable key plus a one-line
-// lesson. Key stability matters: repeats must collapse onto the same entry.
+function commandHead(command) {
+  return normalize(command).split(/[\s;|&]+/)[0].toLowerCase().replace(/^['"]|['"]$/g, '').slice(0, 40) || 'unknown';
+}
+
+// ONLY named detectors are promotable — never invent generic fingerprints.
 const DETECTORS = [
   {
     test: /The term '([^']+)' is not recognized as the name of a cmdlet/i,
@@ -111,30 +114,104 @@ const DETECTORS = [
       };
     },
   },
+  {
+    test: /\bcommand not found\b/i,
+    build(_m, command) {
+      const cmd = commandHead(command);
+      if (UNIX_EQUIVALENTS[cmd] && process.platform === 'win32') {
+        return {
+          key: 'ps-unix-tool:' + cmd,
+          lesson: 'Shell is PowerShell: ' + cmd + ' does not exist. Use ' + UNIX_EQUIVALENTS[cmd] + '.',
+        };
+      }
+      return {
+        key: 'missing-binary:' + cmd,
+        lesson: cmd + ' is not installed or not on PATH. Do not retry it; use an installed alternative.',
+      };
+    },
+  },
+  {
+    test: /Missing file specification after redirection operator/i,
+    build() {
+      return {
+        key: 'ps-no-heredoc',
+        lesson: "PowerShell rejects bash heredoc (<<). Use a here-string (@'...'@ / @\"...\"@) or write a temp file.",
+      };
+    },
+  },
 ];
 
-// Falls back to the first meaningful error line so novel failures still count.
-function genericSignature(command, text) {
-  const line = normalize(text).slice(0, 200);
-  if (!line) return null;
-  const head = normalize(command).split(/[\s;|]/)[0].toLowerCase().slice(0, 40);
-  const fingerprint = line.replace(/["'`][^"'`]*["'`]/g, '?').replace(/\d+/g, 'N').slice(0, 120);
-  return {
-    key: 'generic:' + head + ':' + fingerprint,
-    lesson: head + ' keeps failing with: ' + line.slice(0, 140),
-  };
+function isJunkFailureText(text) {
+  const hay = String(text || '');
+  if (!hay.trim()) return true;
+
+  if (/BLOCKED by learned constraint/i.test(hay)) return true;
+  if (/Learned constraints \(auto-captured/i.test(hay)) return true;
+  if (/Durable memory \(MCP/i.test(hay)) return true;
+
+  if (/Co-authored-by: Cursor|LF will be replaced by CRLF/i.test(hay)) return true;
+  if (/Lines Words Characters Property/i.test(hay)) return true;
+  if (/stargazersCount|"fullName":/i.test(hay)) return true;
+
+  if (/npm notice run /i.test(hay)
+    && !/CommandNotFoundException|is not recognized as the name|command not found/i.test(hay)) {
+    return true;
+  }
+
+  if (/CMake (Warning|Error)|Selecting Windows SDK version/i.test(hay)
+    && !/CommandNotFoundException|is not recognized as the name|command not found/i.test(hay)) {
+    return true;
+  }
+
+  if (/Unexpected token ['"]?\}['"]? in expression|toBeInTheDocument|\bVitest\b|\bJest\b/i.test(hay)
+    && !/CommandNotFoundException|is not recognized as the name/i.test(hay)) {
+    return true;
+  }
+
+  if (/\/api\/[\w-]+|\/dashboard\/[\w-]+/.test(hay) && /[├└│]|Error: Upstream timed out/i.test(hay)) {
+    return true;
+  }
+
+  if (/api[_-]?key|password|secret|bearer |Authorization:|sk-[a-zA-Z0-9]{10,}|OPENAI_API_KEY|SONARQUBE_TOKEN|VANTAGE_API_BASIC/i.test(hay)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isPromotableSignature(signature) {
+  if (!signature || !signature.key || !signature.lesson) return false;
+  const key = String(signature.key);
+  if (key.indexOf('generic:') === 0 || key.indexOf('generic-exit:') === 0) return false;
+  // Named keys: ps-no-and-operator OR namespace:detail
+  if (/^[a-z][a-z0-9_-]*$/i.test(key)) return true;
+  if (/^[a-z0-9][a-z0-9_-]*:[a-z0-9._+:-]+$/i.test(key)) return true;
+  return false;
 }
 
 function detect(command, text) {
   const haystack = String(text || '');
   if (!haystack.trim()) return null;
+  if (isJunkFailureText(haystack)) return null;
+
   for (const detector of DETECTORS) {
     const match = haystack.match(detector.test);
     if (!match) continue;
-    const built = detector.build(match);
-    if (built) return built;
+    const built = detector.build.length >= 2
+      ? detector.build(match, command, haystack)
+      : detector.build(match);
+    if (built && isPromotableSignature(built)) return built;
   }
-  return genericSignature(command, haystack);
+  // No generic fallback — unknown failures stay unrecorded.
+  return null;
 }
 
-module.exports = { detect, normalize };
+module.exports = {
+  detect,
+  normalize,
+  commandHead,
+  isJunkFailureText,
+  isPromotableSignature,
+  UNIX_EQUIVALENTS,
+  SHADOWED_ALIASES,
+};
