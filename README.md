@@ -42,7 +42,7 @@ Uninstall:
 | Unscoped / unknown | `~/.cursor/memory/_unscoped/` |
 | Config (`knownWorkParents`) | `~/.cursor/memory/config.json` |
 
-Install **never** deletes project lesson files. Legacy stores under `~/.cursor/memory/projects/` are still listed by `cli.js projects` but new writes go project-local.
+Install **never** deletes project lesson files.
 
 Tip: add `.cursor/memory/` to a project's `.gitignore` if you do not want lessons committed.
 

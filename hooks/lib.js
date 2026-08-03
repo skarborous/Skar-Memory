@@ -3,13 +3,11 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const crypto = require('crypto');
 
 // test override; unset in production
 const DIR = process.env.SKAR_MEMORY_DIR
   ? path.resolve(process.env.SKAR_MEMORY_DIR)
   : path.join(os.homedir(), '.cursor', 'memory');
-const PROJECTS_DIR = path.join(DIR, 'projects');
 const SAMPLES = path.join(DIR, '_payload-samples.json');
 const SCOPE_WARNINGS = path.join(DIR, 'scope-warnings.json');
 const CONFIG_PATH = path.join(DIR, 'config.json');
@@ -275,12 +273,6 @@ function appendAudit(entry) {
   }
 }
 
-function projectSlug(root) {
-  const base = path.basename(root).toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 40) || 'root';
-  const hash = crypto.createHash('md5').update(root.toLowerCase()).digest('hex').slice(0, 8);
-  return base + '-' + hash;
-}
-
 function isUnscopedStoreRoot(root) {
   const norm = normalizePath(root);
   const unscoped = normalizePath(path.join(DIR, '_unscoped'));
@@ -403,15 +395,6 @@ function listProjects() {
   const unscoped = path.join(DIR, '_unscoped');
   if (fs.existsSync(unscoped)) add(unscoped, unscoped);
 
-  // Legacy global project stores (read-only discovery; new writes use project-local)
-  try {
-    fs.readdirSync(PROJECTS_DIR).forEach((slug) => {
-      const dir = path.join(PROJECTS_DIR, slug);
-      const meta = readJson(path.join(dir, 'project.json'), {});
-      add(dir, meta.root || '(unknown)');
-    });
-  } catch { /* ignore */ }
-
   return results;
 }
 
@@ -495,7 +478,6 @@ function captureSample(event, payload) {
 module.exports = {
   DIR,
   CONFIG_PATH,
-  PROJECTS_DIR,
   PROMOTE_AT,
   MAX_LEARNED,
   MAX_OBSERVATIONS,
