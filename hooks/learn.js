@@ -12,6 +12,11 @@
 const lib = require('./lib');
 const { detect, isJunkFailureText, isPromotableSignature } = require('./detectors');
 const { promoteLesson } = require('./promote');
+const {
+  fingerprintUnknown,
+  recordUnknown,
+  buildUnknownNudge,
+} = require('./unknowns');
 
 const EVENT = process.argv[2] === 'tool' ? 'tool' : 'shell';
 
@@ -144,15 +149,6 @@ async function main() {
 
   const signature = detect(command, text);
 
-  if (!signature || isNoiseLesson(signature, exitCode, text)) {
-    lib.appendAudit({
-      event: EVENT, skip: signature ? 'noise' : 'no-signature', cwd: process.cwd(),
-      command: String(command).slice(0, 80), exitCode,
-      key: signature && signature.key, textHead: String(text).slice(0, 120),
-    });
-    return emit({});
-  }
-
   const root = lib.resolveProjectRoot(payload);
   const scope = lib.flagSuspiciousRoot(root, process.cwd(), EVENT);
   const scopeWarning = buildScopeWarning(root, scope);
@@ -163,38 +159,71 @@ async function main() {
 
   const paths = lib.projectPaths(root);
   lib.ensureProjectMeta(paths);
-
   const now = Date.now();
-  const observations = lib.readJson(paths.observations, {});
-  const learned = lib.readJson(paths.learned, {});
-  const result = promoteLesson(
-    observations,
-    learned,
-    signature.key,
-    { lesson: signature.lesson, event: EVENT, now },
-    {
-      promoteAt: lib.PROMOTE_AT,
-      maxLearned: lib.MAX_LEARNED,
-      pruneByRecency: lib.pruneByRecency,
-    }
-  );
-  lib.writeJson(paths.observations, lib.pruneByRecency(observations, lib.MAX_OBSERVATIONS));
+
+  // Named detector path — auto-promote at threshold
+  if (signature && !isNoiseLesson(signature, exitCode, text)) {
+    const observations = lib.readJson(paths.observations, {});
+    const learned = lib.readJson(paths.learned, {});
+    const result = promoteLesson(
+      observations,
+      learned,
+      signature.key,
+      { lesson: signature.lesson, event: EVENT, now },
+      {
+        promoteAt: lib.PROMOTE_AT,
+        maxLearned: lib.MAX_LEARNED,
+        pruneByRecency: lib.pruneByRecency,
+      }
+    );
+    lib.writeJson(paths.observations, lib.pruneByRecency(observations, lib.MAX_OBSERVATIONS));
+
+    lib.appendAudit({
+      event: EVENT, action: 'recorded', cwd: process.cwd(), root,
+      label: process.env.CURSOR_WORKSPACE_LABEL || null,
+      conversationId: process.env.CURSOR_CONVERSATION_ID || null,
+      key: signature.key, count: result.entry.count, command: String(command).slice(0, 80),
+      exitCode, toolName, suspicious: scope.suspicious,
+    });
+
+    if (!result.promoted) return finish(null);
+
+    lib.writeJson(paths.learned, learned);
+    lib.appendAudit({ event: EVENT, action: result.wasKnown ? 'nudge' : 'promoted', key: signature.key, root });
+    return finish(result.wasKnown ? buildEnforcementNudge(signature, result.entry.count) : null);
+  }
+
+  // Unknown failure path — record only; never auto-promote. Agent supplies fix via cli promote.
+  if (isJunkFailureText(text)) {
+    lib.appendAudit({
+      event: EVENT, skip: 'noise', cwd: process.cwd(),
+      command: String(command).slice(0, 80), exitCode, textHead: String(text).slice(0, 120),
+    });
+    return emit({});
+  }
+
+  const finger = fingerprintUnknown(command, text, exitCode);
+  if (!finger) {
+    lib.appendAudit({
+      event: EVENT, skip: 'no-signature', cwd: process.cwd(),
+      command: String(command).slice(0, 80), exitCode, textHead: String(text).slice(0, 120),
+    });
+    return emit({});
+  }
+
+  const unknowns = lib.readJson(paths.unknowns, {});
+  const entry = recordUnknown(unknowns, finger, { event: EVENT, now });
+  lib.writeJson(paths.unknowns, lib.pruneByRecency(unknowns, lib.MAX_UNKNOWNS));
 
   lib.appendAudit({
-    event: EVENT, action: 'recorded', cwd: process.cwd(), root,
-    label: process.env.CURSOR_WORKSPACE_LABEL || null,
-    conversationId: process.env.CURSOR_CONVERSATION_ID || null,
-    key: signature.key, count: result.entry.count, command: String(command).slice(0, 80),
+    event: EVENT, action: 'unknown-recorded', cwd: process.cwd(), root,
+    key: finger.key, count: entry.count, command: String(command).slice(0, 80),
     exitCode, toolName, suspicious: scope.suspicious,
   });
 
-  if (!result.promoted) return finish(null);
+  if (entry.count < lib.PROMOTE_AT) return finish(null);
 
-  lib.writeJson(paths.learned, learned);
-
-  lib.appendAudit({ event: EVENT, action: result.wasKnown ? 'nudge' : 'promoted', key: signature.key, root });
-
-  return finish(result.wasKnown ? buildEnforcementNudge(signature, result.entry.count) : null);
+  return finish(buildUnknownNudge(finger, entry));
 }
 
 main().catch((err) => {

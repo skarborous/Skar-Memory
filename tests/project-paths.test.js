@@ -13,6 +13,7 @@ describe('projectPaths', () => {
     const paths = lib.projectPaths(root);
     assert.equal(paths.dir, path.join(path.resolve(root), '.cursor', 'memory'));
     assert.equal(paths.learned, path.join(paths.dir, 'learned.json'));
+    assert.equal(paths.unknowns, path.join(paths.dir, 'unknowns.json'));
   });
 
   it('uses global _unscoped for unscoped roots', () => {

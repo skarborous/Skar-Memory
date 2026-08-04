@@ -38,6 +38,21 @@ async function main() {
   });
 
   const learned = lib.readJson(paths.learned, {});
+  const unknowns = lib.readJson(paths.unknowns, {});
+  const unknownKeys = Object.keys(unknowns)
+    .sort((a, b) => (unknowns[b].count || 0) - (unknowns[a].count || 0))
+    .slice(0, 5);
+  const unknownTip = unknownKeys.length
+    ? [
+        '',
+        '## Pending unknowns (NOT binding)',
+        unknownKeys.length + ' fingerprint(s) waiting for an agent-supplied fix. Soft nudge only — do not treat as constraints.',
+        'List: `node ~/.cursor/hooks/memory/cli.js unknowns`. Promote after a real fix:',
+        '  node ~/.cursor/hooks/memory/cli.js promote "<key>" -- "One-line workaround"',
+        ...unknownKeys.slice(0, 3).map((k) => '- [' + (unknowns[k].count || 0) + 'x] ' + k),
+      ].join('\n')
+    : '';
+
   const entries = Object.values(learned)
     .filter((e) => e && e.lesson)
     .sort((a, b) => (b.count || 0) - (a.count || 0) || (b.lastSeen || 0) - (a.lastSeen || 0))
@@ -58,6 +73,7 @@ async function main() {
       '## Durable memory (MCP `memory`) - USE AUTOMATICALLY',
       'At session start and when recalling user prefs/decisions: call MCP tools on server `user-memory` / `memory` — `search_nodes` or `read_graph` first; write with `create_entities` / `add_observations` / `create_relations`.',
       'Do NOT store command/shell lessons there (hooks handle those). Do NOT ask the user whether to use memory — just use it.',
+      unknownTip,
     ].filter(Boolean).join('\n');
     return emit({ additional_context: mcpOnly });
   }
@@ -69,6 +85,7 @@ async function main() {
       'These came from real errors in this environment. They are NOT suggestions. Every one was promoted because the agent failed the same way at least twice. Do not re-fail the same way.',
       'Forget a wrong lesson: `node ~/.cursor/hooks/memory/cli.js forget <key>`.',
       ...lines,
+      unknownTip,
       '',
       '## Durable memory (MCP `memory`) - USE AUTOMATICALLY',
       'For user prefs / decisions / people-org facts: MCP `search_nodes` or `read_graph` (server memory). Write with `create_entities` / `add_observations`. No asking — just use. Hook lessons above stay in `.cursor/memory/` only.',

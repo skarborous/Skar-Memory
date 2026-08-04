@@ -38,8 +38,8 @@ Uninstall:
 
 | Kind | Path |
 |------|------|
-| Per project | `<project>/.cursor/memory/{learned,observations,project}.json` |
-| Unscoped / unknown | `~/.cursor/memory/_unscoped/` |
+| Per project | `<project>/.cursor/memory/{learned,observations,unknowns,project}.json` |
+| Unscoped / fallback | `~/.cursor/memory/_unscoped/` |
 | Config (`knownWorkParents`) | `~/.cursor/memory/config.json` |
 
 Git worktrees and nested `.worktrees/` / `worktrees/` checkouts canonicalize to the **main repo** root, so subagents always write lessons to the primary project store.
@@ -54,9 +54,13 @@ Tip: add `.cursor/memory/` to a project's `.gitignore` if you do not want lesson
 node hooks/cli.js whereami
 node hooks/cli.js list
 node hooks/cli.js pending
+node hooks/cli.js unknowns
+node hooks/cli.js promote <key> -- "One-line workaround"
 node hooks/cli.js forget <key>
 node hooks/cli.js projects
 ```
+
+Named detectors auto-promote after 2 failures. Other failures land in `unknowns` (not binding) until an agent promotes with an explicit fix.
 
 After install, same via `node ~/.cursor/hooks/memory/cli.js ...`.
 
@@ -65,8 +69,9 @@ After install, same via `node ~/.cursor/hooks/memory/cli.js ...`.
 1. `.\install.ps1` or `./install.sh`
 2. Restart Cursor / new agent chat
 3. `node ~/.cursor/hooks/memory/cli.js whereami` — `store` should be `<project>/.cursor/memory`
-4. Fail the same command twice → `pending` / `list`
-5. Confirm non-memory hooks still in `~/.cursor/hooks.json`
+4. Fail the same *named* command twice → `pending` / `list`
+5. Unknown failures → `unknowns`; promote with `promote <key> -- "fix"` after a real workaround
+6. Confirm non-memory hooks still in `~/.cursor/hooks.json`
 
 ## Dev
 

@@ -61,6 +61,7 @@ function getKnownWorkParents() {
 const PROMOTE_AT = 2;
 const MAX_LEARNED = 25;
 const MAX_OBSERVATIONS = 200;
+const MAX_UNKNOWNS = 50;
 
 const CURSOR_CONFIG_DIR = path.join(os.homedir(), '.cursor');
 const AUDIT_LOG = path.join(DIR, 'audit.jsonl');
@@ -378,6 +379,7 @@ function projectPaths(root) {
     root: resolved,
     observations: path.join(dir, 'observations.json'),
     learned: path.join(dir, 'learned.json'),
+    unknowns: path.join(dir, 'unknowns.json'),
     meta: path.join(dir, 'project.json'),
   };
 }
@@ -445,6 +447,7 @@ function findProjectMemoryDirs(parent, maxDepth, out) {
       const mem = path.join(full, 'memory');
       if (fs.existsSync(path.join(mem, 'learned.json'))
         || fs.existsSync(path.join(mem, 'observations.json'))
+        || fs.existsSync(path.join(mem, 'unknowns.json'))
         || fs.existsSync(path.join(mem, 'project.json'))) {
         out.push(mem);
       }
@@ -568,6 +571,7 @@ module.exports = {
   PROMOTE_AT,
   MAX_LEARNED,
   MAX_OBSERVATIONS,
+  MAX_UNKNOWNS,
   readJson,
   writeJson,
   pruneByRecency,
