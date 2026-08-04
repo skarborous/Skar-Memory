@@ -10,7 +10,7 @@
 'use strict';
 
 const lib = require('./lib');
-const { detect, isJunkFailureText, isPromotableSignature } = require('./detectors');
+const { detect, isJunkFailureText, isPromotableSignature, parseLeanCtxExit, looksLikeExecutionFailure } = require('./detectors');
 const { promoteLesson } = require('./promote');
 const {
   fingerprintUnknown,
@@ -68,7 +68,13 @@ function extract(payload) {
   ].filter(Boolean).join('\n');
 
   const exitCode = firstNumber(payload, ['exit_code', 'exitCode', 'code', 'status']);
-  return { command, text, exitCode, toolName };
+  const parsedExit = exitCode == null ? parseLeanCtxExit(text) : null;
+  return {
+    command,
+    text,
+    exitCode: exitCode != null ? exitCode : (parsedExit ? parsedExit.code : null),
+    toolName,
+  };
 }
 
 function looksFailed(exitCode, text, toolName, payload) {
@@ -77,7 +83,7 @@ function looksFailed(exitCode, text, toolName, payload) {
   if (/BLOCKED by learned constraint/i.test(hay)) return false;
   if (
     isJunkFailureText(hay)
-    && !/CommandNotFoundException|is not recognized as the name|token '&&'|command not found|lean-ctx replace mode|ctx_shell detected a|Missing file specification after redirection/i.test(hay)
+    && !looksLikeExecutionFailure(hay)
   ) {
     return false;
   }
@@ -87,7 +93,8 @@ function looksFailed(exitCode, text, toolName, payload) {
   if (hookEvent === 'postToolUseFailure') return true;
   if (payload && (payload.failure_type || payload.error_message || payload.errorMessage)) return true;
   if (typeof exitCode === 'number') return exitCode !== 0;
-  return /CommandNotFoundException|is not recognized as the name|FullyQualifiedErrorId|token '&&' is not a valid|lean-ctx replace mode is active|ctx_shell detected a|command not found|Missing file specification after redirection/i.test(hay);
+  // lean-ctx often returns success tool_result with EXIT N in the body (no exit_code).
+  return looksLikeExecutionFailure(hay);
 }
 
 function isNoiseLesson(signature, exitCode, text) {

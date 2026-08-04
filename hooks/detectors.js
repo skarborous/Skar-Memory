@@ -41,6 +41,24 @@ function hasPowerShellAndOperator(command) {
   return /(^|\s)&&(\s|$)/.test(stripQuotedShellSegments(command));
 }
 
+/** Parse lean-ctx / shell failure markers when Cursor omits exit_code. */
+function parseLeanCtxExit(text) {
+  const hay = String(text || '');
+  let m = hay.match(/\bEXIT\s+(\d+)\s*[—\-–:]\s*([^\n\r]+)/i);
+  if (m) return { code: Number(m[1]), message: String(m[2] || '').trim() };
+  m = hay.match(/\[exit:(\d+)\]/i);
+  if (m) return { code: Number(m[1]), message: '' };
+  m = hay.match(/Command failed with exit code\s+(\d+)/i);
+  if (m) return { code: Number(m[1]), message: '' };
+  return null;
+}
+
+function looksLikeExecutionFailure(text) {
+  const hay = String(text || '');
+  if (parseLeanCtxExit(hay)) return true;
+  return /CommandNotFoundException|is not recognized as the name|FullyQualifiedErrorId|token '&&' is not a valid|lean-ctx replace mode is active|ctx_shell detected a|command not found|Missing file specification after redirection|Python was not found|App execution aliases|MCP error\s*-?\d+|Invalid arguments:|ERROR:\s|refusing to scan|privacy-protected|\[BLOCKED\]|\bCONFLICT\b|old_string not found|old_text not found|Tool execution error/i.test(hay);
+}
+
 // ONLY named detectors are promotable — never invent generic fingerprints.
 const DETECTORS = [
   {
@@ -123,6 +141,87 @@ const DETECTORS = [
       return {
         key: 'lean-ctx-shadow-mode',
         lesson: 'lean-ctx shadow mode denies native Grep/Glob/Write. Use ctx_search, ctx_glob, ctx_edit.',
+      };
+    },
+  },
+  {
+    // MCP schema reject: {"error":"MCP error -32602: task is required"}
+    test: /MCP error\s*-?32602:\s*([\w'"\[\].]+)\s+is required|ERROR:\s*(?:'([^']+)'\s+parameter\s+is required|([\w'"\[\].]+)\s+is required)|Invalid arguments:[\s\S]*?\b([A-Za-z_][\w]*)\s*:\s*Required\b|\b(task|pattern|query|path|server|toolName|toolname|name|id|command)\s+is required\b/i,
+    build(m) {
+      const raw = String(m[1] || m[2] || m[3] || m[4] || m[5] || 'param').replace(/['"]/g, '');
+      const param = raw.toLowerCase().replace(/[^a-z0-9_+.-]/g, '').slice(0, 40) || 'param';
+      const hints = {
+        task: 'ctx_compose needs task="...". Call GetMcpTools(server="user-lean-ctx", toolName="ctx_compose") if unsure.',
+        pattern: 'ctx_search / ctx_glob need pattern="...". Do not omit it.',
+        query: 'This lean-ctx tool needs query="...".',
+        path: 'Pass an explicit project path= (not home / drive root).',
+        server: 'CallMcpTool needs server="...". Discover with GetMcpTools first.',
+        toolname: 'CallMcpTool needs toolName="...". Discover with GetMcpTools first.',
+        name: 'Pass name= (or handle) for this lean-ctx action.',
+        id: 'Pass id= / handle (e.g. @F1). Use ctx_expand(action="list") if needed.',
+        command: 'ctx_shell needs command="...".',
+      };
+      return {
+        key: 'lean-ctx-required:' + param,
+        lesson: 'lean-ctx/MCP rejected missing required param `' + param + '`. ' +
+          (hints[param] || 'Call GetMcpTools for the tool schema, then retry with required fields. Do not repeat the empty call.'),
+      };
+    },
+  },
+  {
+    test: /MCP error\s*-?\d+/i,
+    build(m) {
+      const code = (String(m[0]).match(/-?\d+/) || ['unknown'])[0];
+      return {
+        key: 'lean-ctx-mcp:' + code,
+        lesson: 'MCP tool call failed (' + code + '). Read the error, call GetMcpTools for the schema, fix args — do not retry the same invalid call.',
+      };
+    },
+  },
+  {
+    test: /refusing to scan|privacy-protected directory/i,
+    build() {
+      return {
+        key: 'lean-ctx-path-scope',
+        lesson: 'lean-ctx refuses home/drive-root scans. Pass path= to a specific project directory (e.g. Documents/GitHub/<repo>).',
+      };
+    },
+  },
+  {
+    test: /\[BLOCKED\]/i,
+    build() {
+      return {
+        key: 'lean-ctx-shell-blocked',
+        lesson: 'ctx_shell permanently blocked this command class. Escalate to ctx_execute(language="shell") or use a different tool — do not retry ctx_shell.',
+      };
+    },
+  },
+  {
+    test: /\bCONFLICT\b|old_string not found|old_text not found|preimage mismatch/i,
+    build() {
+      return {
+        key: 'lean-ctx-patch-stale',
+        lesson: 'lean-ctx patch/edit stale (CONFLICT / old_string not found). Re-read with ctx_read, then retry with fresh anchors/text — do not reuse the failed patch.',
+      };
+    },
+  },
+  {
+    // lean-ctx formats: EXIT 9009 — Python was not found … App execution aliases
+    test: /EXIT\s+9009\b[\s\S]*Python was not found|Python was not found[\s\S]*App execution aliases/i,
+    build() {
+      return {
+        key: 'win-python-store-alias',
+        lesson: 'Windows App Execution Alias for python (exit 9009). Use `py -3`, full path to python.exe, or disable python/python3 aliases under Settings > Apps > Advanced app settings > App execution aliases.',
+      };
+    },
+  },
+  {
+    test: /EXIT\s+9009\b/i,
+    build(_m, command) {
+      const cmd = commandHead(command);
+      return {
+        key: 'missing-binary:' + cmd,
+        lesson: cmd + ' not found (Windows exit 9009). Install it, use full path, or disable App execution aliases if it is a Store stub.',
       };
     },
   },
@@ -224,6 +323,8 @@ module.exports = {
   commandHead,
   stripQuotedShellSegments,
   hasPowerShellAndOperator,
+  parseLeanCtxExit,
+  looksLikeExecutionFailure,
   isJunkFailureText,
   isPromotableSignature,
   UNIX_EQUIVALENTS,
