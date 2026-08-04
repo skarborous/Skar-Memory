@@ -5,6 +5,7 @@ const {
   detect,
   isJunkFailureText,
   isPromotableSignature,
+  hasPowerShellAndOperator,
 } = require('../hooks/detectors');
 
 describe('detect', () => {
@@ -75,5 +76,17 @@ describe('isJunkFailureText / isPromotableSignature', () => {
 
   it('flags secret-like dumps as junk', () => {
     assert.equal(isJunkFailureText('OPENAI_API_KEY=sk-abcdefghijklmnop'), true);
+  });
+});
+
+describe('hasPowerShellAndOperator', () => {
+  it('flags real PowerShell && separators', () => {
+    assert.equal(hasPowerShellAndOperator('npm test && npm build'), true);
+    assert.equal(hasPowerShellAndOperator('cd foo; bar && baz'), true);
+  });
+
+  it('ignores && inside quoted payloads (python -c, etc.)', () => {
+    assert.equal(hasPowerShellAndOperator('python -c "if (a && b) { pass }"'), false);
+    assert.equal(hasPowerShellAndOperator("python -c 'order_coin_margined && price'"), false);
   });
 });

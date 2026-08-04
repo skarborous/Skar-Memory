@@ -5,7 +5,7 @@
 'use strict';
 
 const lib = require('./lib');
-const { detect } = require('./detectors');
+const { detect, hasPowerShellAndOperator } = require('./detectors');
 
 function emit(obj) { process.stdout.write(JSON.stringify(obj || {})); process.exit(0); }
 
@@ -19,7 +19,7 @@ const BLOCKERS = {
     const head = String(command || '').trim().split(/[\s;|]/)[0].toLowerCase();
     return head === tool;
   },
-  'ps-no-and-operator': (_key, command) => /(^|\s)&&(\s|$)/.test(String(command || '')),
+  'ps-no-and-operator': (_key, command) => hasPowerShellAndOperator(command),
   'ps-curl-alias': (_key, command) => /^curl(\s|$)/.test(String(command || '').trim()) && !/^curl\.exe(\s|$)/.test(String(command || '').trim()),
   'ps-encoding-utf8nobom': (_key, command) => /utf8NoBOM/i.test(String(command || '')),
   'lean-ctx-shadow-mode': (_key, command) => false, // informational only — no command pattern to block

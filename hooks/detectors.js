@@ -29,6 +29,18 @@ function commandHead(command) {
   return normalize(command).split(/[\s;|&]+/)[0].toLowerCase().replace(/^['"]|['"]$/g, '').slice(0, 40) || 'unknown';
 }
 
+/** Strip quoted runs so && inside python -c / here-strings is not treated as PS separator. */
+function stripQuotedShellSegments(command) {
+  let out = String(command || '');
+  out = out.replace(/'(?:''|[^'])*'/g, '');
+  out = out.replace(/"(?:\\.|[^"\\])*"/g, '');
+  return out;
+}
+
+function hasPowerShellAndOperator(command) {
+  return /(^|\s)&&(\s|$)/.test(stripQuotedShellSegments(command));
+}
+
 // ONLY named detectors are promotable — never invent generic fingerprints.
 const DETECTORS = [
   {
@@ -210,6 +222,8 @@ module.exports = {
   detect,
   normalize,
   commandHead,
+  stripQuotedShellSegments,
+  hasPowerShellAndOperator,
   isJunkFailureText,
   isPromotableSignature,
   UNIX_EQUIVALENTS,
